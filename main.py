@@ -30,11 +30,8 @@ def show_images(images):
 
 
 # Hyper Parameters
-num_epochs = 20
-batch_size = 100
-
 total_classes = 10
-num_classes = 2
+num_classes = 10
 
 
 transform = transforms.Compose([
@@ -50,7 +47,7 @@ transform_test = transforms.Compose([
 ])
 
 # Initialize CNN
-K = 1000 # total number of exemplars
+K = 2000 # total number of exemplars
 icarl = iCaRLNet(2048, 1)
 icarl.cuda()
 
@@ -62,8 +59,8 @@ for s in range(0, total_classes, num_classes):
                          train=True,
                          classes=range(s,s+num_classes),
                          download=True,
-                         transform=transform)
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size,
+                         transform=transform_test)
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size=100,
                                                shuffle=True, num_workers=2)
 
     test_set = iCIFAR10(root='./data',
@@ -71,7 +68,7 @@ for s in range(0, total_classes, num_classes):
                          classes=range(num_classes),
                          download=True,
                          transform=transform_test)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size=batch_size,
+    test_loader = torch.utils.data.DataLoader(test_set, batch_size=100,
                                                shuffle=True, num_workers=2)
 
 
@@ -87,7 +84,7 @@ for s in range(0, total_classes, num_classes):
     for y in xrange(icarl.n_known, icarl.n_classes):
         print "Constructing exemplar set for class-%d..." %(y),
         images = train_set.get_image_class(y)
-        icarl.construct_exemplar_set(images, m, transform)
+        icarl.construct_exemplar_set(images, m, transform_test)
         print "Done"
 
     for y, P_y in enumerate(icarl.exemplar_sets):
@@ -99,6 +96,16 @@ for s in range(0, total_classes, num_classes):
 
     total = 0.0
     correct = 0.0
+    for indices, images, labels in train_loader:
+        images = Variable(images).cuda()
+        preds = icarl.classify(images, transform_test)
+        total += labels.size(0)
+        correct += (preds.data.cpu() == labels).sum()
+
+    print('Train Accuracy: %d %%' % (100 * correct / total))
+
+    total = 0.0
+    correct = 0.0
     for indices, images, labels in test_loader:
         images = Variable(images).cuda()
         preds = icarl.classify(images, transform_test)
@@ -106,30 +113,5 @@ for s in range(0, total_classes, num_classes):
         correct += (preds.data.cpu() == labels).sum()
 
     print('Test Accuracy: %d %%' % (100 * correct / total))
-
-
-"""
-# Loss and Optimizer
-criterion = nn.BCELoss()
-optimizer = optim.Adam(net.parameters(), lr=learnig_rate)
-
-for epoch in range(num_epochs):
-    for i, (indices, images, labels) in enumerate(train_loader):
-        images = Variable(images).cuda()
-        labels = Variable(labels).cuda()
-
-        # Forward + Backward + Optimize
-        optimizer.zero_grad()
-        g = net(images)
-
-        loss = sum(criterion(g[:,y], (labels==y).type(torch.cuda.FloatTensor))\
-                for y in xrange(2))
-        loss.backward()
-        optimizer.step()
-
-        if (i+1) % 100 == 0:
-            print ('Epoch [%d/%d], Iter [%d/%d] Loss: %.4f' 
-                   %(epoch+1, num_epochs, i+1, len(train_set)//batch_size, loss.data[0]))
-"""
 
 

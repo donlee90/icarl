@@ -1,14 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from resnet import resnet18
 import torch.optim as optim
 from torch.autograd import Variable
 import numpy as np
 from PIL import Image
 
+from resnet import resnet18
+
 # Hyper Parameters
-num_epochs = 15
+num_epochs = 50
 batch_size = 100
 learning_rate = 0.002
 
@@ -19,6 +20,8 @@ class iCaRLNet(nn.Module):
         self.feature_extractor = resnet18()
         self.feature_extractor.fc =\
             nn.Linear(self.feature_extractor.fc.in_features, feature_size)
+        self.bn = nn.BatchNorm1d(feature_size, momentum=0.01)
+        self.ReLU = nn.ReLU()
         self.fc = nn.Linear(feature_size, n_classes, bias=False)
 
         self.n_classes = n_classes
@@ -30,9 +33,12 @@ class iCaRLNet(nn.Module):
         self.exemplar_sets = []
 
         # Learning method
-        self.criterion = nn.BCELoss()
+        self.cls_loss = nn.CrossEntropyLoss()
+        self.dist_loss = nn.BCELoss()
         self.optimizer = optim.Adam(self.parameters(), lr=learning_rate,
                                     weight_decay=0.00001)
+        #self.optimizer = optim.SGD(self.parameters(), lr=2.0,
+        #                           weight_decay=0.00001)
 
         # Means of exemplars
         self.compute_means = True
@@ -40,8 +46,9 @@ class iCaRLNet(nn.Module):
 
     def forward(self, x):
         x = self.feature_extractor(x)
+        x = self.bn(x)
+        x = self.ReLU(x)
         x = self.fc(x)
-        x = F.sigmoid(x)
         return x
 
     def increment_classes(self, n):
@@ -78,7 +85,7 @@ class iCaRLNet(nn.Module):
                     features.append(feature)
                 features = torch.stack(features)
                 mu_y = features.mean(0).squeeze()
-                mu_y.data = mu_y.data / mu_y.data.norm()
+                mu_y.data = mu_y.data / mu_y.data.norm() # Normalize
                 exemplar_means.append(mu_y)
             self.exemplar_means = exemplar_means
             self.compute_means = False
@@ -90,6 +97,8 @@ class iCaRLNet(nn.Module):
         means = means.transpose(1, 2) # (batch_size, feature_size, n_classes)
 
         feature = self.feature_extractor(x) # (batch_size, feature_size)
+        for i in xrange(feature.size(0)): # Normalize
+            feature.data[i] = feature.data[i] / feature.data[i].norm()
         feature = feature.unsqueeze(2) # (batch_size, feature_size, 1)
         feature = feature.expand_as(means) # (batch_size, feature_size, n_classes)
 
@@ -115,7 +124,7 @@ class iCaRLNet(nn.Module):
 
         features = np.array(features)
         class_mean = np.mean(features, axis=0)
-        class_mean = class_mean / np.linalg.norm(class_mean)
+        class_mean = class_mean / np.linalg.norm(class_mean) # Normalize
 
         exemplar_set = []
         exemplar_features = [] # list of Variables of shape (feature_size,)
@@ -123,7 +132,9 @@ class iCaRLNet(nn.Module):
             S = np.sum(exemplar_features, axis=0)
             phi = features
             mu = class_mean
-            i = np.argmin(np.sqrt(np.sum((mu - 1.0/(k+1) * (phi + S)) ** 2, axis=1)))
+            mu_p = 1.0/(k+1) * (phi + S)
+            mu_p = mu_p / np.linalg.norm(mu_p)
+            i = np.argmin(np.sqrt(np.sum((mu - mu_p) ** 2, axis=1)))
 
             exemplar_set.append(images[i])
             exemplar_features.append(features[i])
@@ -171,13 +182,12 @@ class iCaRLNet(nn.Module):
         for indices, images, labels in loader:
             images = Variable(images).cuda()
             indices = indices.cuda()
-            g = self.forward(images)
+            g = F.sigmoid(self.forward(images))
             q[indices] = g.data
         q = Variable(q).cuda()
 
         # Run network training
         optimizer = self.optimizer
-        criterion = self.criterion
 
         for epoch in xrange(num_epochs):
             for i, (indices, images, labels) in enumerate(loader):
@@ -189,14 +199,15 @@ class iCaRLNet(nn.Module):
                 g = self.forward(images)
                 
                 # Classification loss for new classes
-                loss = sum(criterion(g[:,y], (labels==y).type(torch.cuda.FloatTensor))\
-                            for y in xrange(self.n_known, self.n_classes))
+                loss = self.cls_loss(g, labels)
                 #loss = loss / len(range(self.n_known, self.n_classes))
 
                 # Distilation loss for old classes
                 if self.n_known > 0:
+                    g = F.sigmoid(g)
                     q_i = q[indices]
-                    dist_loss = sum(criterion(g[:,y], q_i[:,y]) for y in xrange(self.n_known))
+                    dist_loss = sum(self.dist_loss(g[:,y], q_i[:,y])\
+                            for y in xrange(self.n_known))
                     #dist_loss = dist_loss / self.n_known
                     loss += dist_loss
 
@@ -206,4 +217,3 @@ class iCaRLNet(nn.Module):
                 if (i+1) % 10 == 0:
                     print ('Epoch [%d/%d], Iter [%d/%d] Loss: %.4f' 
                            %(epoch+1, num_epochs, i+1, len(dataset)//batch_size, loss.data[0]))
-
