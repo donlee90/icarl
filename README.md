@@ -10,4 +10,4 @@ The code implements experiments on CIFAR-10 and CIFAR-100
   3. I tried to replicate the algorithm exactly as described in the paper, but I might have missed some of the details.
 * Versions
   - Python 2.7
-  - PyTorch v0.1.0
+  - PyTorch v0.1.12
